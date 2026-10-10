@@ -1,0 +1,88 @@
+name: Build Android APK (BollywoodSub AI)
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type (debug or release)'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: ☕ Set up Java 21 (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: 🟢 Set up Node.js LTS (22)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 📱 Accept Android SDK Licenses & Prepare Platforms
+        run: |
+          echo "Accepting Android SDK licenses..."
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          echo "Ensuring Android SDK 36 platform..."
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36" || true
+
+      - name: 📦 Install Node Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: 🛠️ Build Web Application (Vite)
+        run: npm run build
+
+      - name: 🔄 Sync Capacitor Android Platform
+        run: npx cap sync android
+
+      - name: 🐘 Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 🔑 Make Gradlew Executable
+        run: chmod +x ./android/gradlew
+
+      - name: 🏗️ Build Debug APK
+        if: "${{ github.event.inputs.build_type != 'release' }}"
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace --no-daemon
+
+      - name: 🏗️ Build Release APK (Unsigned)
+        if: "${{ github.event.inputs.build_type == 'release' }}"
+        run: |
+          cd android
+          ./gradlew assembleRelease --stacktrace --no-daemon
+
+      - name: 📤 Upload Debug APK Artifact
+        if: "${{ github.event.inputs.build_type != 'release' }}"
+        uses: actions/upload-artifact@v4
+        with:
+          name: BollywoodSub-AI-Debug-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: 📤 Upload Release APK Artifact
+        if: "${{ github.event.inputs.build_type == 'release' }}"
+        uses: actions/upload-artifact@v4
+        with:
+          name: BollywoodSub-AI-Release-APK
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 30

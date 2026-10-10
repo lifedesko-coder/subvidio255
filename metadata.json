@@ -1,0 +1,6 @@
+{
+  "name": "ترجمة الأفلام والمسلسلات الهندية - BollywoodSub AI",
+  "description": "تطبيق ويب متكامل واحترافي لترجمة الفيديوهات والأفلام الهندية إلى العربية بدقة فائقة مع توليد SRT/ASS وحرق الترجمة ومزامنة حتمية بدون أخطاء التوقيت.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
