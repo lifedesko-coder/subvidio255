@@ -305,6 +305,9 @@ def translate_bollywood_media(
 """
 
     fast_speech_rule = """
+- تغطية الخط الزمني بالكامل والتقاط كافة الحوارات من أول ثانية إلى آخر ثانية (Full Timeline Coverage):
+  * ترجم المقطع بشكل شامل وكامل، بداية من الثانية 00:00.00 وحتى نهاية آخر ثانية في المقطع دون أي قفز أو اختصار أو تجزئة.
+  * لا تختصر الحوارات؛ يجب استخراج وترجمة كل جملة وكل محادثة تدور بين الممثلين عبر كامل مدة الفيديو من البداية للوسط للنهاية.
 - التقاط الحوارات السريعة والمتداخلة والمقتضبة (Fast & Rapid Hindi Speech):
   * المتحدثون بالهندية قد يتحدثون بسرعة عالية جداً، أو يتداخل كلامهم معاً، أو ينطقون عبارات خاطفة ومقتضبة جداً أو همساً (مثل: "لا يهم"، "حسناً"، "توقف"، "اسمعني"، "ماذا حدث؟").
   * دقق سمعياً وبصرياً في حركة شفاه الممثلين في الفيديو والصوت، والتقط كل جملة أو كلمة حوار حتى لو كانت قصيرة أو سريعة جداً دون تفويت أي كلام بشري.
@@ -315,7 +318,7 @@ def translate_bollywood_media(
 أنت المترجم السينمائي الأول المتخصص في ترجمة الأفلام والمسلسلات الهندية إلى اللغة العربية:
 - الهدف الأساسي: استمع بتركيز فائق وحوّل كل الحوارات حصراً إلى: {target_dialect_desc}.
 - في حال اختيار الفصحى: التزم تماماً بالقواعد النحوية والتراكيب الفصيحة الأنيقة المتداولة في ترجمة الأفلام العالمية (مثل منصات Netflix و Shahid). لا تستخدم أي تعبيرات عامية إطلاقاً.
-- ابدأ من بداية المقطع (00:00.00) دون تفويت أي جملة أو كلمة.
+- ابدأ من بداية المقطع (00:00.00) وحتى نهايته تماماً دون تفويت أي جملة أو كلمة أو مشهد كلامي.
 {sound_rule}
 {fast_speech_rule}
 - الـ Hinglish وشارع مومباي: صغ المعنى بدقة بأسلوب فصيح مفهوم ({'مفعل: احتفظ بنبرة الحوار' if preserve_hinglish else 'ترجم المعنى إلى الفصحى المباشرة'}).
@@ -336,24 +339,48 @@ def translate_bollywood_media(
 ]
 """
 
-    prompt = "ترجم هذا المقطع بدقة واحترافية سينمائية كاملة إلى العربية، مع التركيز التام على كلام الممثلين والأغاني واستبعاد كافة المؤثرات الصوتية، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
+    prompt = (
+        "حلل وترجم هذا المقطع بالكامل من بدايته (00:00.00) وحتى نهايته بدقة واحترافية سينمائية كاملة إلى العربية. "
+        "ترجم كل سطر وكل حوار ينطقه الممثلون أو الأغاني عبر كامل مدة الفيديو دون إهمال أي دقيقة أو ثانية، "
+        "مع استبعاد كافة المؤثرات الصوتية والبيئية تماماً، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
+    )
+
+    import time
 
     # رفع الملف إلى Gemini Files API
     with st.spinner("⏳ جاري رفع ملف الوسائط إلى Google Gemini API..."):
         uploaded_gemini_file = client.files.upload(file=media_path)
 
+    # انتظار معالجة الملف في خوادم Google والتأكد من حالته ACTIVE
+    with st.spinner("⏳ جاري معالجة وتجهيز ملف الوسائط في خوادم Google Gemini..."):
+        poll_start = time.time()
+        file_ref = uploaded_gemini_file
+        while hasattr(file_ref, "state") and getattr(file_ref.state, "name", None) == "PROCESSING":
+            if time.time() - poll_start > 120:  # حد أقصى دقيقتين
+                break
+            time.sleep(2)
+            try:
+                file_ref = client.files.get(name=uploaded_gemini_file.name)
+            except Exception:
+                break
+        
+        if hasattr(file_ref, "state") and getattr(file_ref.state, "name", None) == "FAILED":
+            raise RuntimeError(f"فشلت معالجة ملف الفيديو في Google Gemini: {getattr(file_ref, 'error', 'Unknown error')}")
+        
+        uploaded_gemini_file = file_ref
+
     # قائمة النماذج المرشحة مع تبديل تلقائي فوري (Auto-Cascade Pipeline)
-    # إذا كان خادم Google يواجه ضغطاً (503) أو أي مشكلة، يتم التحويل للنموذج التالي فوراً
+    # الأولوية للنموذج الأقوى والأشمل أولاً
     available_pool = [
-        "gemini-3.5-flash-lite",   # فائق السرعة وخفيف جداً، نادر التعرض للضغط
-        "gemini-3.8-flash",        # النموذج الأساسي الأكثر دقة
-        "gemini-flash-latest",     # الاسم المستعار المباشر لأحدث إصدار Flash
+        "gemini-3.8-flash",        # النموذج الأساسي الأكثر دقة وشمولية
+        "gemini-flash-latest",     # أحدث إصدار Flash رسمي
+        "gemini-3.5-flash-lite",   # فائق السرعة وخفيف كخيار بديل
         "gemini-3.1-flash-lite",   # نموذج بديل إضافي
     ]
 
     # ترتيب أولويات النماذج بناءً على اختيار المستخدم
     selected_clean = model_name
-    for opt in ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"]:
+    for opt in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]:
         if opt in str(model_name):
             selected_clean = opt
             break
@@ -367,7 +394,6 @@ def translate_bollywood_media(
     last_err = None
     successful_model = None
 
-    import time
     status_placeholder = st.empty()
 
     for idx, candidate_model in enumerate(models_to_try):
@@ -562,14 +588,14 @@ st.sidebar.subheader("⚙️ إعدادات الترجمة والنموذج")
 model_choice = st.sidebar.selectbox(
     "نموذج Gemini ونظام التشغيل:",
     options=[
-        "⚡ التبديل التلقائي الذكي (Auto-Cascade - مضمون ضد الضغط)",
-        "gemini-3.5-flash-lite (فائق السرعة والأقل ضغطاً)",
-        "gemini-3.8-flash (الأعلى دقة وسينمائية)",
+        "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.8 Flash)",
+        "gemini-3.8-flash (الأعلى دقة واحترافية وتغطية كاملة)",
         "gemini-flash-latest (الأحدث رسمياً)",
+        "gemini-3.5-flash-lite (فائق السرعة والأقل ضغطاً)",
         "gemini-3.1-flash-lite (خفيف واحتياطي)",
     ],
     index=0,
-    help="التبديل التلقائي الذكي يقوم بالانتقال فوراً وبدون انقطاع بين النماذج إذا واجه أي خادم ضغطاً مؤقتاً."
+    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash الشامل، وينتقل تلقائياً للبديل فقط إذا حدث ضغط في خوادم Google."
 )
 
 dialect_choice = st.sidebar.selectbox(
