@@ -596,16 +596,17 @@ def translate_bollywood_media(
         
         uploaded_gemini_file = file_ref
 
-    # قائمة النماذج المرشحة مع تبديل تلقائي فوري (Auto-Cascade Pipeline)
-    # مرتبة بدقة حسب الترتيب الصارم المطلوب من المستخدم لحماية فائقة من ضغط الخوادم والحصص:
+    # قائمة النماذج المعتمدة رسمياً في Google API والمثبت كفاءتها
+    # مرتبة للأفضلية والسرعة والمقاومة التامة لضغط الخوادم:
     available_pool = [
-        "gemini-3.8-flash",        # 1. أولاً: النموذج الأقوى والأحدث والأعلى دقة وشمولية
-        "gemini-flash-latest",     # 2. ثانياً: أحدث إصدار رسمي من Flash
-        "gemini-2.5-pro",          # 3. ثالثاً: احترافي عميق فائق الذكاء والتفاصيل
-        "gemini-3.1-pro",          # 4. رابعاً: نموذج احترافي متقدم للملفات الصعبة
-        "gemini-3.5-pro",          # 5. خامساً: العملاق للاستيعاب الشامل
-        "gemini-3.1-flash-lite",   # 6. سادساً: فائق السرعة وخفيف كخيار بديل
-        "gemini-3.5-flash",        # 7. سابعاً: متوازن وسريع
+        "gemini-3.8-flash",         # 1. أولاً: النموذج الأقوى والأعلى دقة سينمائية
+        "gemini-3.6-flash",         # 2. ثانياً: فائق الاستقرار وسريع جداً
+        "gemini-3.5-flash",         # 3. ثالثاً: مستقر ومجرب بنجاح فوري
+        "gemini-3.5-flash-lite",    # 4. رابعاً: فائق السرعة وخفيف ومنيع ضد ضغط الخوادم
+        "gemini-flash-lite-latest", # 5. خامساً: أحدث إصدار خفيف
+        "gemini-2.5-pro",           # 6. سادساً: احترافي عميق فائق الذكاء والتفاصيل
+        "gemini-3.1-pro-preview",   # 7. سابعاً: الاسم الرسمي لنموذج Pro 3.1 في Google
+        "gemini-flash-latest",      # 8. ثامناً: الاسم المعتمد المباشر لـ Flash
     ]
 
     # استخراج النموذج الأولي المختار وترتيب القائمة
@@ -628,36 +629,52 @@ def translate_bollywood_media(
     status_placeholder = st.empty()
 
     for idx, candidate_model in enumerate(models_to_try):
-        try:
-            status_placeholder.info(f"⚡ جاري تحليل وترجمة الصوت سينمائياً عبر النموذج ({idx + 1}/{len(models_to_try)}): **{candidate_model}**...")
-            response = client.models.generate_content(
-                model=candidate_model,
-                contents=[uploaded_gemini_file, prompt],
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                    temperature=0.1,  # درجة منخفضة جداً لمنع الهلوسة والوصف العشوائي للأصوات
+        model_success = False
+        # محاولة أولية + إعادة محاولة ذكية فورية عند حدوث 503 (Spike Backoff)
+        for attempt in range(2):
+            try:
+                attempt_note = "" if attempt == 0 else " 🔄 (إعادة المحاولة بعد زوال الضغط)..."
+                status_placeholder.info(f"⚡ جاري تحليل وترجمة الصوت سينمائياً عبر النموذج ({idx + 1}/{len(models_to_try)}): **{candidate_model}**{attempt_note}")
+                
+                response = client.models.generate_content(
+                    model=candidate_model,
+                    contents=[uploaded_gemini_file, prompt],
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        response_mime_type="application/json",
+                        temperature=0.1,  # درجة منخفضة جداً لمنع الهلوسة والوصف العشوائي للأصوات
+                    )
                 )
-            )
-            successful_model = candidate_model
-            status_placeholder.success(f"🎉 تم الاتصال بنجاح وتوليد الترجمة عبر النموذج: **{candidate_model}**")
+                successful_model = candidate_model
+                status_placeholder.success(f"🎉 تم الاتصال بنجاح وتوليد الترجمة عبر النموذج: **{candidate_model}**")
+                model_success = True
+                break
+            except Exception as e:
+                last_err = e
+                err_str = str(e)
+                # إذا كان الخطأ 503 (ضغط مؤقت) في المحاولة الأولى، ننتظر 2.5 ثانية ليزول الضغط ونعيد المحاولة
+                if attempt == 0 and ("503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str or "overloaded" in err_str):
+                    status_placeholder.warning(f"⏳ النموذج `{candidate_model}` واجه ضغطاً لحظياً (503). جاري الانتظار ثانيتين لإعادة المحاولة...")
+                    time.sleep(2.5)
+                    continue
+                else:
+                    break
+
+        if model_success and response is not None:
             break
-        except Exception as e:
-            last_err = e
-            err_str = str(e)
-            
-            # إذا بقي نموذج آخر في القائمة، يتم التبديل التلقائي بسلاسة بدون إحباط المستخدم
-            if idx < len(models_to_try) - 1:
-                next_model = models_to_try[idx + 1]
-                status_placeholder.warning(
-                    f"⚠️ النموذج `{candidate_model}` واجه ضغطاً أو توقفاً مؤقتاً في خوادم Google ({err_str[:60]}...). "
-                    f"جاري التحويل التلقائي فوراً إلى النموذج التالي `{next_model}` وفق الترتيب المعتمد..."
-                )
-                time.sleep(1.0)
-                continue
-            else:
-                status_placeholder.error(f"❌ تعذرت الاستجابة بعد تجربة جميع النماذج ({', '.join(models_to_try)}).")
-                raise e
+
+        # إذا بقي نموذج آخر في القائمة، يتم التبديل التلقائي بسلاسة
+        if idx < len(models_to_try) - 1:
+            next_model = models_to_try[idx + 1]
+            status_placeholder.warning(
+                f"⚠️ تعذر استخدام `{candidate_model}`. "
+                f"جاري التحويل التلقائي فوراً إلى النموذج البديل `{next_model}` وفق الترتيب المعتمد..."
+            )
+            time.sleep(1.0)
+            continue
+        else:
+            status_placeholder.error(f"❌ تعذرت الاستجابة بعد تجربة جميع النماذج ({', '.join(models_to_try)}).")
+            raise last_err
 
     if response is None:
         raise last_err or RuntimeError("فشل توليد الاستجابة من جميع نماذج Gemini المتاحة.")
@@ -815,17 +832,18 @@ st.sidebar.subheader("⚙️ إعدادات الترجمة والنموذج")
 model_choice = st.sidebar.selectbox(
     "نموذج Gemini ونظام التشغيل:",
     options=[
-        "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.8 Flash)",
+        "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.8 Flash مع حماية 503)",
         "gemini-3.8-flash (1. الأسرع والأعلى دقة واحترافية)",
-        "gemini-flash-latest (2. أحدث إصدار رسمي)",
-        "gemini-2.5-pro (3. احترافي عميق فائق الذكاء والتفاصيل)",
-        "gemini-3.1-pro (4. نموذج متطور للحوارات السريعة والمعقدة)",
-        "gemini-3.5-pro (5. العملاق للاستيعاب الشامل)",
-        "gemini-3.1-flash-lite (6. فائق السرعة وخفيف كبديل)",
-        "gemini-3.5-flash (7. متوازن وسريع)",
+        "gemini-3.6-flash (2. فائق الاستقرار وسريع)",
+        "gemini-3.5-flash (3. معتمد ومستقر)",
+        "gemini-3.5-flash-lite (4. منيع ضد الضغط وسريع جداً)",
+        "gemini-flash-lite-latest (5. أحدث إصدار خفيف)",
+        "gemini-2.5-pro (6. احترافي عميق فائق الذكاء)",
+        "gemini-3.1-pro-preview (7. متطور للملفات الصعبة)",
+        "gemini-flash-latest (8. أحدث إصدار رسمي)",
     ],
     index=0,
-    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash الشامل، وينتقل تلقائياً وبأجزاء من الثانية إلى النماذج التالية وفق الترتيب الصارم للحماية من أي ضغط أو انقطاع في خوادم Google."
+    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash، وإذا واجه السيرفر أي ضغط مؤقت (503) يعيد المحاولة خلال ثانيتين ثم ينتقل تلقائياً للبديل المعتمد."
 )
 
 dialect_choice = st.sidebar.selectbox(
