@@ -255,6 +255,119 @@ def is_sound_effect_or_ambient(arabic_text: str, hindi_text: str = "") -> tuple[
 
 
 # ==========================================
+# دالة تجزئة وتقطيع الأسطر الطويلة لراحة المشاهد
+# ==========================================
+def split_long_cue(cue: dict, max_duration: float = 5.5, max_words: int = 14) -> list:
+    """
+    تجزئة الأسطر والمونولوجات الطويلة (التي تتجاوز الحد الأقصى للمدة أو عدد الكلمات)
+    إلى عدة أسطر سينمائية متتالية مريحة لعين المشاهد، مع توزيع التوقيت بذكاء نسبي.
+    """
+    start = cue["start"]
+    end = cue["end"]
+    total_dur = end - start
+    arabic_text = cue.get("arabic", "").strip()
+    hindi_text = cue.get("hindi", "").strip()
+    cue_type = cue.get("type", "dialogue")
+
+    arabic_words = arabic_text.split()
+    
+    # إذا كانت المدة مقبولة وعدد الكلمات معقولاً، نترك السطر كما هو
+    if total_dur <= max_duration and len(arabic_words) <= max_words:
+        return [cue]
+
+    # محاولة التقسيم بالاعتماد على علامات الترقيم العربية (نقطة، فاصلة، علامة استفهام، تعجب، إلخ)
+    sentences = [s.strip() for s in re.split(r'([.،؟!?؛…\n]+)', arabic_text) if s.strip()]
+    
+    # إعادة تجميع المقاطع مع علامات الترقيم
+    merged_sentences = []
+    curr = ""
+    for piece in sentences:
+        if piece in [".", "،", "؟", "!", "؟!", "!؟", "؛", "…", "\n", "..", "..."]:
+            curr += piece
+        else:
+            if curr:
+                merged_sentences.append(curr.strip())
+            curr = piece
+    if curr:
+        merged_sentences.append(curr.strip())
+
+    # إذا كانت الجمل المقسمة قليلة جداً لكن الكلمات كثيرة، نقسم بناءً على عدد الكلمات
+    final_segments = []
+    if len(merged_sentences) <= 1:
+        words = arabic_words
+        chunk_size = max(6, min(max_words, 10))
+        for i in range(0, len(words), chunk_size):
+            chunk = " ".join(words[i:i + chunk_size])
+            if chunk:
+                final_segments.append(chunk)
+    else:
+        # تجميع الجمل القصيرة جداً معاً حتى لا تكون مفتتة أكثر من اللازم
+        accum = ""
+        for s in merged_sentences:
+            if not accum:
+                accum = s
+            elif len(accum.split()) + len(s.split()) <= max_words:
+                accum += " " + s
+            else:
+                final_segments.append(accum)
+                accum = s
+        if accum:
+            final_segments.append(accum)
+
+    if len(final_segments) <= 1:
+        return [cue]
+
+    # تقسيم النص الهندي بالتوازي إن أمكن
+    hindi_words = hindi_text.split()
+    hindi_segments = []
+    if len(hindi_words) > 0:
+        h_chunk_size = max(1, len(hindi_words) // len(final_segments))
+        for i in range(len(final_segments)):
+            if i == len(final_segments) - 1:
+                h_part = " ".join(hindi_words[i * h_chunk_size:])
+            else:
+                h_part = " ".join(hindi_words[i * h_chunk_size:(i + 1) * h_chunk_size])
+            hindi_segments.append(h_part)
+    else:
+        hindi_segments = [hindi_text] * len(final_segments)
+
+    # توزيع التوقيت الزمني نسبياً بحسب عدد حروف كل جملة
+    total_chars = sum(max(1, len(seg)) for seg in final_segments)
+    current_start = start
+    result_cues = []
+
+    for i, seg in enumerate(final_segments):
+        weight = max(1, len(seg)) / total_chars
+        seg_dur = total_dur * weight
+        seg_end = current_start + seg_dur
+        
+        # التأكد من عدم تجاوز النهاية الكلية في آخر مقطع
+        if i == len(final_segments) - 1:
+            seg_end = end
+
+        h_seg = hindi_segments[i] if i < len(hindi_segments) else ""
+        
+        # الحفاظ على نوتة الأغنية إذا كانت أغنية
+        clean_seg = seg
+        if cue_type in ("song", "rap"):
+            if not clean_seg.startswith("♪") and not clean_seg.startswith("♫"):
+                clean_seg = f"♪ {clean_seg}"
+            if not clean_seg.endswith("♪") and not clean_seg.endswith("♫"):
+                clean_seg = f"{clean_seg} ♪"
+
+        result_cues.append({
+            "start": round(current_start, 2),
+            "end": round(seg_end, 2),
+            "arabic": clean_seg,
+            "hindi": h_seg,
+            "type": cue_type
+        })
+        current_start = seg_end
+
+    return result_cues
+
+
+# ==========================================
 # دالة ترجمة وتحليل الكلام الهندي عبر Gemini
 # ==========================================
 def translate_bollywood_media(
@@ -265,6 +378,7 @@ def translate_bollywood_media(
     preserve_hinglish: bool = False,
     translate_songs: bool = True,
     min_duration: float = 1.0,
+    max_duration: float = 5.0,
     ignore_sound_effects: bool = True
 ) -> list:
     """
@@ -313,6 +427,15 @@ def translate_bollywood_media(
   * دقق سمعياً وبصرياً في حركة شفاه الممثلين في الفيديو والصوت، والتقط كل جملة أو كلمة حوار حتى لو كانت قصيرة أو سريعة جداً دون تفويت أي كلام بشري.
 """
 
+    sub_segmentation_rule = """
+- تجزئة الجمل والمونولوجات الطويلة لراحة المشاهد (Subtitle Segmentation & Max Duration):
+  * قاعدة الحد الأقصى للمدة: يمنع منعاً باتاً دمج كلام يستمر لأكثر من 5 ثوانٍ في سطر ترجمة واحد!
+  * إذا واصل الممثل الكلام لأكثر من 5 ثوانٍ أو ألقى خطاباً/مونولوجاً متواصلاً (مثل 10 أو 18 ثانية):
+    قسّم كلامه حتماً إلى عدة بطاقات/أسطر متتالية قصيرة ومريحة لعين المشاهد (كل سطر مدته بين 2.0 إلى 4.5 ثوانٍ، وبحد أقصى 10 إلى 12 كلمة لكل ظهور).
+  * قسّم الكلام دائماً عند الفواصل الطبيعية ونهايات الجمل (نقطة، فاصلة، أداة ربط، وقفة تنفس).
+  * لا تجعل المشاهد يقرأ فقرة جريدة كاملة في سطر واحد؛ التزم بمعايير منصات البث العالمية (Netflix / Shahid).
+"""
+
     # التعليمات التوجيهية للذكاء الاصطناعي
     system_instruction = f"""
 أنت المترجم السينمائي الأول المتخصص في ترجمة الأفلام والمسلسلات الهندية إلى اللغة العربية:
@@ -321,6 +444,7 @@ def translate_bollywood_media(
 - ابدأ من بداية المقطع (00:00.00) وحتى نهايته تماماً دون تفويت أي جملة أو كلمة أو مشهد كلامي.
 {sound_rule}
 {fast_speech_rule}
+{sub_segmentation_rule}
 - الـ Hinglish وشارع مومباي: صغ المعنى بدقة بأسلوب فصيح مفهوم ({'مفعل: احتفظ بنبرة الحوار' if preserve_hinglish else 'ترجم المعنى إلى الفصحى المباشرة'}).
 - أغاني الخلفية والراب الهندي: ({'مفعل: ضع علامة النوتة الموسيقية ♪ في بداية ونهاية كل بيت شعري أو مقطع غنائي أو راب هندي' if translate_songs else 'ترجم الحوارات فقط'}).
 
@@ -341,7 +465,8 @@ def translate_bollywood_media(
 
     prompt = (
         "حلل وترجم هذا المقطع بالكامل من بدايته (00:00.00) وحتى نهايته بدقة واحترافية سينمائية كاملة إلى العربية. "
-        "ترجم كل سطر وكل حوار ينطقه الممثلون أو الأغاني عبر كامل مدة الفيديو دون إهمال أي دقيقة أو ثانية، "
+        "ترجم كل سطر وكل حوار ينطقه الممثلون أو الأغاني عبر كامل مدة الفيديو دون إهمال أي دقيقة أو ثانية. "
+        "مهم جداً: قسّم الحوارات والمونولوجات الطويلة إلى أسطر قصيرة ومريحة لعين المشاهد (كل سطر لا يتجاوز 4 إلى 5 ثوانٍ)، "
         "مع استبعاد كافة المؤثرات الصوتية والبيئية تماماً، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
     )
 
@@ -471,13 +596,16 @@ def translate_bollywood_media(
                 arabic = f"{arabic} ♪"
 
         if arabic or hindi:
-            processed.append({
+            base_cue = {
                 "start": start,
                 "end": end,
                 "arabic": arabic,
                 "hindi": hindi,
                 "type": cue_type
-            })
+            }
+            # تقطيع وتجزئة الأسطر الطويلة تلقائياً لراحة المشاهد
+            split_cues = split_long_cue(base_cue, max_duration=max_duration, max_words=12)
+            processed.extend(split_cues)
 
     processed.sort(key=lambda x: x["start"])
 
@@ -637,6 +765,15 @@ min_duration = st.sidebar.slider(
     step=0.1
 )
 
+max_duration = st.sidebar.slider(
+    "الحد الأقصى لظهور السطر (لمنع النصوص الطويلة):",
+    min_value=3.0,
+    max_value=8.0,
+    value=5.0,
+    step=0.5,
+    help="يقوم بتقطيع المونولوجات الطويلة تلقائياً إلى أسطر سينمائية مريحة للعين (معيار Netflix هو 4-5 ثوانٍ كحد أقصى لكل سطر)."
+)
+
 ffmpeg_available = check_ffmpeg_installed()
 if ffmpeg_available:
     st.sidebar.caption("🎬 FFmpeg: متوفر ونشط (دعم استخراج ومزامنة وحرق الترجمة)")
@@ -794,6 +931,7 @@ if has_media or use_demo:
                         preserve_hinglish=preserve_hinglish,
                         translate_songs=translate_songs,
                         min_duration=min_duration,
+                        max_duration=max_duration,
                         ignore_sound_effects=ignore_sound_effects
                     )
 
