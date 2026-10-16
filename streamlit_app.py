@@ -368,6 +368,105 @@ def split_long_cue(cue: dict, max_duration: float = 5.5, max_words: int = 14) ->
 
 
 # ==========================================
+# دالة استخراج وإصلاح JSON المضاد للأخطاء والانقطاع
+# ==========================================
+def safe_parse_cues_json(raw_text: str) -> list:
+    """
+    استخراج وإصلاح بيانات JSON بمرونة فائقة:
+    - إزالة كتل الماركداون والشوائب النصية.
+    - إصلاح الانقطاع المفاجئ عند انتهاء التوكنات للمقاطع الطويلة (Truncation Repair).
+    - تنظيف الفواصل الزائدة قبل الأقواس.
+    - استخراج تدريجي مرن لكل سطر حوار حتى لو احتوى على علامات تنصيص داخلية غير مهربة أو فواصل مفقودة.
+    """
+    if not raw_text or not raw_text.strip():
+        return []
+
+    text = raw_text.strip()
+
+    # 1. تنظيف كتل الماركداون
+    if "```" in text:
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.MULTILINE)
+        text = re.sub(r"\s*```$", "", text, flags=re.MULTILINE).strip()
+
+    # محاولة التحليل المباشر السليم
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return data
+        elif isinstance(data, dict):
+            for k in ["cues", "subtitles", "translations", "data", "segments"]:
+                if k in data and isinstance(data[k], list):
+                    return data[k]
+            return [data]
+    except Exception:
+        pass
+
+    # 2. إزالة الفواصل المتأخرة الزائدة قبل [ أو {
+    clean_text = re.sub(r",\s*([\]\}])", r"\1", text)
+    try:
+        data = json.loads(clean_text)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        pass
+
+    # 3. معالجة الانقطاع في نهاية التوليد (Truncation Fix):
+    # عند وصول التوليد لحد التوكنات، ينقطع النص فجأة.
+    # نحدد آخر كائن مكتمل { ... } ونغلق المصفوفة ]
+    last_brace_idx = text.rfind("}")
+    if last_brace_idx != -1:
+        truncated_attempt = text[:last_brace_idx + 1].strip()
+        first_bracket_idx = truncated_attempt.find("[")
+        if first_bracket_idx != -1:
+            truncated_attempt = truncated_attempt[first_bracket_idx:]
+        else:
+            truncated_attempt = "[" + truncated_attempt
+        if not truncated_attempt.endswith("]"):
+            truncated_attempt += "\n]"
+        truncated_attempt = re.sub(r",\s*\]", "]", truncated_attempt)
+        try:
+            data = json.loads(truncated_attempt)
+            if isinstance(data, list) and len(data) > 0:
+                return data
+        except Exception:
+            pass
+
+    # 4. الاستخراج التدريجي لكافة كائنات الحوارات حتى لو احتوت على علامات تنصيص غير مهربة
+    cues = []
+    # البحث عن كل كائن {...} يحتوي على timecodeStart
+    obj_pattern = re.compile(r"\{[^{}]*\"timecodeStart\"[^{}]*\}", re.DOTALL)
+    for m in obj_pattern.finditer(text):
+        obj_str = m.group(0)
+        try:
+            obj = json.loads(obj_str)
+            if "timecodeStart" in obj:
+                cues.append(obj)
+                continue
+        except Exception:
+            pass
+
+        # استخراج يدوي للمفاتيح عند وجود أخطاء صياغة أو تنصيص داخلي
+        tc_start = re.search(r"\"timecodeStart\"\s*:\s*\"([^\"]+)\"", obj_str)
+        tc_end = re.search(r"\"timecodeEnd\"\s*:\s*\"([^\"]+)\"", obj_str)
+        ar = re.search(r"\"arabicTranslation\"\s*:\s*\"(.*?)\"(?=\s*,\s*\"(?:type|speaker)\"|\s*\})", obj_str, re.DOTALL)
+        hi = re.search(r"\"originalHindi\"\s*:\s*\"(.*?)\"(?=\s*,\s*\"arabicTranslation\")", obj_str, re.DOTALL)
+        ctype = re.search(r"\"type\"\s*:\s*\"([^\"]+)\"", obj_str)
+        if tc_start and tc_end:
+            cues.append({
+                "timecodeStart": tc_start.group(1),
+                "timecodeEnd": tc_end.group(1),
+                "arabicTranslation": ar.group(1) if ar else "",
+                "originalHindi": hi.group(1) if hi else "",
+                "type": ctype.group(1) if ctype else "dialogue"
+            })
+
+    if cues:
+        return cues
+
+    raise ValueError("تعذر استخراج بيانات حوارات صالحة من استجابة النموذج.")
+
+
+# ==========================================
 # دالة ترجمة وتحليل الكلام الهندي عبر Gemini
 # ==========================================
 def translate_bollywood_media(
@@ -451,6 +550,9 @@ def translate_bollywood_media(
 قاعدة التوقيت الحتمية الصارمة (منع خطأ الـ 100 ثانية):
 - أخرج التوقيت حصراً بصيغة نصية (MM:SS.ms) مثل "00:01.50" أو "01:25.80".
 - الدقيقة تساوي 60 ثانية تماماً وليس 100 ثانية.
+- قواعد سلامة بناء مصفوفة JSON الصارمة (منع أخطاء التنصيص والانقطاع):
+  * لا تضع علامات اقتباس مزدوجة داخل النصوص إطلاقاً (استخدم علامات مفردة '...' أو أقواس «...» للاقتباس داخل الحوار)، لضمان صحة ملف JSON.
+  * لا تترك فواصل متأخرة زائدة قبل إغلاق المصفوفة أو الكائن.
 - أخرج الناتج حصراً بمصفوفة JSON صالحة ومطابقة للشكل التالي:
 [
   {{
@@ -467,7 +569,7 @@ def translate_bollywood_media(
         "حلل وترجم هذا المقطع بالكامل من بدايته (00:00.00) وحتى نهايته بدقة واحترافية سينمائية كاملة إلى العربية. "
         "ترجم كل سطر وكل حوار ينطقه الممثلون أو الأغاني عبر كامل مدة الفيديو دون إهمال أي دقيقة أو ثانية. "
         "مهم جداً: قسّم الحوارات والمونولوجات الطويلة إلى أسطر قصيرة ومريحة لعين المشاهد (كل سطر لا يتجاوز 4 إلى 5 ثوانٍ)، "
-        "مع استبعاد كافة المؤثرات الصوتية والبيئية تماماً، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
+        "مع استبعاد كافة المؤثرات الصوتية والبيئية تماماً، وتجنب علامات الاقتباس المزدوجة داخل النصوص، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
     )
 
     import time
@@ -495,17 +597,20 @@ def translate_bollywood_media(
         uploaded_gemini_file = file_ref
 
     # قائمة النماذج المرشحة مع تبديل تلقائي فوري (Auto-Cascade Pipeline)
-    # الأولوية للنموذج الأقوى والأشمل أولاً
+    # مرتبة بدقة حسب الترتيب الصارم المطلوب من المستخدم لحماية فائقة من ضغط الخوادم والحصص:
     available_pool = [
-        "gemini-3.8-flash",        # النموذج الأساسي الأكثر دقة وشمولية
-        "gemini-flash-latest",     # أحدث إصدار Flash رسمي
-        "gemini-3.5-flash-lite",   # فائق السرعة وخفيف كخيار بديل
-        "gemini-3.1-flash-lite",   # نموذج بديل إضافي
+        "gemini-3.8-flash",        # 1. أولاً: النموذج الأقوى والأحدث والأعلى دقة وشمولية
+        "gemini-flash-latest",     # 2. ثانياً: أحدث إصدار رسمي من Flash
+        "gemini-2.5-pro",          # 3. ثالثاً: احترافي عميق فائق الذكاء والتفاصيل
+        "gemini-3.1-pro",          # 4. رابعاً: نموذج احترافي متقدم للملفات الصعبة
+        "gemini-3.5-pro",          # 5. خامساً: العملاق للاستيعاب الشامل
+        "gemini-3.1-flash-lite",   # 6. سادساً: فائق السرعة وخفيف كخيار بديل
+        "gemini-3.5-flash",        # 7. سابعاً: متوازن وسريع
     ]
 
-    # ترتيب أولويات النماذج بناءً على اختيار المستخدم
-    selected_clean = model_name
-    for opt in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]:
+    # استخراج النموذج الأولي المختار وترتيب القائمة
+    selected_clean = "gemini-3.8-flash"
+    for opt in available_pool:
         if opt in str(model_name):
             selected_clean = opt
             break
@@ -513,6 +618,7 @@ def translate_bollywood_media(
     if "auto" in str(model_name).lower() or "ذكي" in str(model_name):
         models_to_try = available_pool
     else:
+        # إذا اختار المستخدم نموذجاً معيناً، نبدأ به ثم بقية النماذج بالترتيب الصارم
         models_to_try = [selected_clean] + [m for m in available_pool if m != selected_clean]
 
     response = None
@@ -523,7 +629,7 @@ def translate_bollywood_media(
 
     for idx, candidate_model in enumerate(models_to_try):
         try:
-            status_placeholder.info(f"⚡ جاري تحليل وترجمة الصوت سينمائياً عبر النموذج: **{candidate_model}**...")
+            status_placeholder.info(f"⚡ جاري تحليل وترجمة الصوت سينمائياً عبر النموذج ({idx + 1}/{len(models_to_try)}): **{candidate_model}**...")
             response = client.models.generate_content(
                 model=candidate_model,
                 contents=[uploaded_gemini_file, prompt],
@@ -540,12 +646,12 @@ def translate_bollywood_media(
             last_err = e
             err_str = str(e)
             
-            # إذا بقي نموذج آخر في القائمة، يتم التبديل التلقائي بدون إحباط المستخدم
+            # إذا بقي نموذج آخر في القائمة، يتم التبديل التلقائي بسلاسة بدون إحباط المستخدم
             if idx < len(models_to_try) - 1:
                 next_model = models_to_try[idx + 1]
                 status_placeholder.warning(
-                    f"⚠️ النموذج `{candidate_model}` واجه ضغطاً أو توقفاً مؤقتاً في خوادم Google. "
-                    f"جاري التحويل التلقائي فوراً إلى النموذج البديل `{next_model}`..."
+                    f"⚠️ النموذج `{candidate_model}` واجه ضغطاً أو توقفاً مؤقتاً في خوادم Google ({err_str[:60]}...). "
+                    f"جاري التحويل التلقائي فوراً إلى النموذج التالي `{next_model}` وفق الترتيب المعتمد..."
                 )
                 time.sleep(1.0)
                 continue
@@ -558,15 +664,8 @@ def translate_bollywood_media(
 
     raw_text = response.text or ""
 
-    # استخراج وقراءة الـ JSON
-    try:
-        raw_cues = json.loads(raw_text)
-    except Exception:
-        match = re.search(r'\[\s*\{.*\}\s*\]', raw_text, re.DOTALL)
-        if match:
-            raw_cues = json.loads(match.group(0))
-        else:
-            raise ValueError(f"تعذر استخراج بيانات JSON صالحة من استجابة النموذج:\n{raw_text[:300]}")
+    # استخراج وقراءة الـ JSON مع الإصلاح التلقائي المقاوم للانقطاع وعلامات التنصيص
+    raw_cues = safe_parse_cues_json(raw_text)
 
     # المعالجة الزمنية الحتمية وضبط الفواصل
     processed = []
@@ -717,13 +816,16 @@ model_choice = st.sidebar.selectbox(
     "نموذج Gemini ونظام التشغيل:",
     options=[
         "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.8 Flash)",
-        "gemini-3.8-flash (الأعلى دقة واحترافية وتغطية كاملة)",
-        "gemini-flash-latest (الأحدث رسمياً)",
-        "gemini-3.5-flash-lite (فائق السرعة والأقل ضغطاً)",
-        "gemini-3.1-flash-lite (خفيف واحتياطي)",
+        "gemini-3.8-flash (1. الأسرع والأعلى دقة واحترافية)",
+        "gemini-flash-latest (2. أحدث إصدار رسمي)",
+        "gemini-2.5-pro (3. احترافي عميق فائق الذكاء والتفاصيل)",
+        "gemini-3.1-pro (4. نموذج متطور للحوارات السريعة والمعقدة)",
+        "gemini-3.5-pro (5. العملاق للاستيعاب الشامل)",
+        "gemini-3.1-flash-lite (6. فائق السرعة وخفيف كبديل)",
+        "gemini-3.5-flash (7. متوازن وسريع)",
     ],
     index=0,
-    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash الشامل، وينتقل تلقائياً للبديل فقط إذا حدث ضغط في خوادم Google."
+    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash الشامل، وينتقل تلقائياً وبأجزاء من الثانية إلى النماذج التالية وفق الترتيب الصارم للحماية من أي ضغط أو انقطاع في خوادم Google."
 )
 
 dialect_choice = st.sidebar.selectbox(

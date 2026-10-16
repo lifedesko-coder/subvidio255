@@ -404,11 +404,13 @@ export const UploadAndConfig: React.FC<UploadAndConfigProps> = ({
             onChange={(e) => onUpdateSettings({ model: e.target.value as any })}
             className="bg-neutral-900 border border-neutral-700 rounded-lg px-2.5 py-1 text-xs text-neutral-200 font-mono focus:outline-none cursor-pointer"
           >
-            <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (نشط ومستقر وسريع - موصى به)</option>
-            <option value="gemini-3.6-flash">gemini-3.6-flash (دقة عالية وسريع)</option>
-            <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-            <option value="gemini-3.8-flash">gemini-3.8-flash</option>
-            <option value="gemini-flash-latest">gemini-flash-latest</option>
+            <option value="gemini-3.8-flash">gemini-3.8-flash (1. الأسرع والأعلى دقة واحترافية - افتراضي)</option>
+            <option value="gemini-flash-latest">gemini-flash-latest (2. أحدث إصدار رسمي)</option>
+            <option value="gemini-2.5-pro">gemini-2.5-pro (3. احترافي عميق فائق الذكاء والتفاصيل)</option>
+            <option value="gemini-3.1-pro">gemini-3.1-pro (4. نموذج متطور للحوارات السريعة والمعقدة)</option>
+            <option value="gemini-3.5-pro">gemini-3.5-pro (5. العملاق للاستيعاب الشامل)</option>
+            <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (6. فائق السرعة وخفيف كبديل)</option>
+            <option value="gemini-3.5-flash">gemini-3.5-flash (7. متوازن وسريع)</option>
           </select>
         </div>
 
