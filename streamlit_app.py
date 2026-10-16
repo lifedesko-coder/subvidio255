@@ -362,7 +362,7 @@ def split_long_cue(cue: dict, max_duration: float = 5.5, max_words: int = 14) ->
             "hindi": h_seg,
             "type": cue_type
         })
-        current_start = seg_end
+        current_start = min(end, seg_end + 0.06)
 
     return result_cues
 
@@ -527,12 +527,13 @@ def translate_bollywood_media(
 """
 
     sub_segmentation_rule = """
-- تجزئة الجمل والمونولوجات الطويلة لراحة المشاهد (Subtitle Segmentation & Max Duration):
-  * قاعدة الحد الأقصى للمدة: يمنع منعاً باتاً دمج كلام يستمر لأكثر من 5 ثوانٍ في سطر ترجمة واحد!
-  * إذا واصل الممثل الكلام لأكثر من 5 ثوانٍ أو ألقى خطاباً/مونولوجاً متواصلاً (مثل 10 أو 18 ثانية):
-    قسّم كلامه حتماً إلى عدة بطاقات/أسطر متتالية قصيرة ومريحة لعين المشاهد (كل سطر مدته بين 2.0 إلى 4.5 ثوانٍ، وبحد أقصى 10 إلى 12 كلمة لكل ظهور).
-  * قسّم الكلام دائماً عند الفواصل الطبيعية ونهايات الجمل (نقطة، فاصلة، أداة ربط، وقفة تنفس).
-  * لا تجعل المشاهد يقرأ فقرة جريدة كاملة في سطر واحد؛ التزم بمعايير منصات البث العالمية (Netflix / Shahid).
+- التزامن الشفهي الصارم واحترام فترات الصمت الدرامية (Strict Speech-Onset Sync & Zero Lead-in Error):
+  * قاعدة تطابق البداية: يجب أن يتطابق وقت بداية السطر (timecodeStart) بدقة متناهية مع لحظة نطق أول حرف/كلمة تخرج من فم الممثل في الصوت والصورة.
+  * يمنع منعاً باتاً ظهور سطر الترجمة مبكراً أثناء صمت الممثل، أو أثناء حركته أو وقفاته ونظراته وتأملاته في المشهد قبل بدء الكلام.
+  * احترام الوقفات الدرامية بين الجمل (Dramatic Pauses): إذا نطق الممثل جملة، ثم صمت لمدة ثانية أو أكثر ليتأمل أو ينظر أو يمشي، ثم نطق جملة أخرى:
+    يجب حتماً فصل كل جملة في كائن مستقل (Sentence-level Cue) بتوقيتها الحقيقي، مع ترك فترة الصمت خالية تماماً من الترجمة (لا تدمج فترات الصمت في الترجمة أبداً).
+  * يجب أن ينتهي السطر (timecodeEnd) فور توقف الممثل عن نطق تلك الجملة.
+  * قاعدة الحد الأقصى للمدة: اجعل كل سطر قصيراً وأنيقاً ومريحاً لعين المشاهد (بين 2.0 إلى 4.5 ثوانٍ، وبحد أقصى 10 إلى 12 كلمة لكل سطر)، ولا تدمج فقرات طويلة معاً.
 """
 
     # التعليمات التوجيهية للذكاء الاصطناعي
@@ -568,7 +569,8 @@ def translate_bollywood_media(
     prompt = (
         "حلل وترجم هذا المقطع بالكامل من بدايته (00:00.00) وحتى نهايته بدقة واحترافية سينمائية كاملة إلى العربية. "
         "ترجم كل سطر وكل حوار ينطقه الممثلون أو الأغاني عبر كامل مدة الفيديو دون إهمال أي دقيقة أو ثانية. "
-        "مهم جداً: قسّم الحوارات والمونولوجات الطويلة إلى أسطر قصيرة ومريحة لعين المشاهد (كل سطر لا يتجاوز 4 إلى 5 ثوانٍ)، "
+        "مهم جداً للسلامة الزمنية: ابدأ توقيت كل سطر فور خروج أول كلمة من فم الممثل في الصوت والصورة ولا تسبق كلامه أبداً أثناء فترات الصمت أو التأمل. "
+        "قسّم الحوارات على مستوى الجمل إلى أسطر قصيرة ومريحة لعين المشاهد (كل سطر لا يتجاوز 3 إلى 5 ثوانٍ)، "
         "مع استبعاد كافة المؤثرات الصوتية والبيئية تماماً، وتجنب علامات الاقتباس المزدوجة داخل النصوص، واستخراج التوقيتات بصيغة MM:SS.ms في مصفوفة JSON."
     )
 
@@ -596,23 +598,22 @@ def translate_bollywood_media(
         
         uploaded_gemini_file = file_ref
 
-    # قائمة النماذج المعتمدة رسمياً في Google API والمثبت كفاءتها
-    # مرتبة للأفضلية والسرعة والمقاومة التامة لضغط الخوادم:
+    # قائمة النماذج المعتمدة رسمياً في Google API وفق الترتيب الصارم المطلوب:
     available_pool = [
-        "gemini-3.8-flash",         # 1. أولاً: النموذج الأقوى والأعلى دقة سينمائية
-        "gemini-3.6-flash",         # 2. ثانياً: فائق الاستقرار وسريع جداً
-        "gemini-3.5-flash",         # 3. ثالثاً: مستقر ومجرب بنجاح فوري
-        "gemini-3.5-flash-lite",    # 4. رابعاً: فائق السرعة وخفيف ومنيع ضد ضغط الخوادم
-        "gemini-flash-lite-latest", # 5. خامساً: أحدث إصدار خفيف
-        "gemini-2.5-pro",           # 6. سادساً: احترافي عميق فائق الذكاء والتفاصيل
-        "gemini-3.1-pro-preview",   # 7. سابعاً: الاسم الرسمي لنموذج Pro 3.1 في Google
-        "gemini-flash-latest",      # 8. ثامناً: الاسم المعتمد المباشر لـ Flash
+        "gemini-3.1-pro-preview",   # 1. أولاً: النموذج الاحترافي فائق الذكاء والاستيعاب
+        "gemini-2.5-pro",           # 2. ثانياً: احترافي عميق للأفلام والمسلسلات
+        "gemini-3.8-flash",         # 3. ثالثاً: الأحدث والأعلى دقة وبلاغة
+        "gemini-3.6-flash",         # 4. رابعاً: فائق الاستقرار وسريع
+        "gemini-3.5-flash",         # 5. خامساً: معتمد ومستقر وسريع
+        "gemini-flash-lite-latest", # 6. سادساً: أحدث إصدار خفيف
+        "gemini-3.1-flash-lite",    # 7. سابعاً: نموذج 3.1 Flash خفيف وسريع
+        "gemini-3.5-flash-lite",    # 8. ثامناً: منيع ضد الضغط وفائق السرعة
     ]
 
     # استخراج النموذج الأولي المختار وترتيب القائمة
-    selected_clean = "gemini-3.8-flash"
+    selected_clean = "gemini-3.1-pro-preview"
     for opt in available_pool:
-        if opt in str(model_name):
+        if opt in str(model_name) or (opt == "gemini-3.1-flash-lite" and "3.1-flash" in str(model_name)):
             selected_clean = opt
             break
 
@@ -798,26 +799,44 @@ st.sidebar.markdown("""
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔑 إعدادات مفتاح الذكاء الاصطناعي")
 
-# قراءة المفتاح من البيئة إن وجد كافتراضي
-env_key = os.environ.get("GEMINI_API_KEY", "")
-try:
-    if not env_key and hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-        env_key = st.secrets["GEMINI_API_KEY"]
-except Exception:
-    pass
+# قراءة المفتاح تلقائياً من Secrets أو متغيرات البيئة بمختلف التسميات المحتملة
+env_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_KEY") or ""
+if not env_key and hasattr(st, "secrets"):
+    for possible_name in ["GEMINI_API_KEY", "GOOGLE_API_KEY", "gemini_api_key", "google_api_key", "GEMINI_KEY", "api_key", "apiKey"]:
+        try:
+            if possible_name in st.secrets:
+                val = str(st.secrets[possible_name]).strip()
+                if val:
+                    env_key = val
+                    break
+        except Exception:
+            pass
 
-api_key_input = st.sidebar.text_input(
-    "مفتاح Google AI Studio Gemini API:",
-    value=env_key,
-    type="password",
-    placeholder="AIzaSy...",
-    help="أدخل مفتاحك الخاص لتشغيل الترجمة مباشرة بدون أي حدود لسعة السيرفر أو انقطاع."
-)
-
-if api_key_input:
-    st.sidebar.success("✅ مفتاح API تم إدخاله وجاهز للاستخدام")
+if env_key:
+    api_key_input = env_key
+    st.sidebar.success("✅ تم تفعيل مفتاح API تلقائياً من إعدادات Streamlit Secrets")
+    with st.sidebar.expander("تغيير مفتاح API يدوياً (اختياري)"):
+        override_key = st.text_input(
+            "مفتاح بديل:",
+            value="",
+            type="password",
+            placeholder="AIzaSy...",
+            help="اتركه فارغاً للاعتماد على المفتاح التلقائي المحفوظ."
+        )
+        if override_key.strip():
+            api_key_input = override_key.strip()
 else:
-    st.sidebar.warning("⚠️ أدخل مفتاحك لتبدأ الترجمة فوراً")
+    api_key_input = st.sidebar.text_input(
+        "مفتاح Google AI Studio Gemini API:",
+        value="",
+        type="password",
+        placeholder="AIzaSy...",
+        help="أدخل مفتاحك الخاص لتشغيل الترجمة مباشرة بدون قيود."
+    )
+    if api_key_input:
+        st.sidebar.success("✅ مفتاح API تم إدخاله وجاهز للاستخدام")
+    else:
+        st.sidebar.warning("⚠️ أدخل مفتاحك لتبدأ الترجمة فوراً")
 
 st.sidebar.markdown("""
 <div style="font-size: 0.8rem; background: #0F172A; padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; margin-bottom: 12px;">
@@ -832,18 +851,18 @@ st.sidebar.subheader("⚙️ إعدادات الترجمة والنموذج")
 model_choice = st.sidebar.selectbox(
     "نموذج Gemini ونظام التشغيل:",
     options=[
-        "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.8 Flash مع حماية 503)",
-        "gemini-3.8-flash (1. الأسرع والأعلى دقة واحترافية)",
-        "gemini-3.6-flash (2. فائق الاستقرار وسريع)",
-        "gemini-3.5-flash (3. معتمد ومستقر)",
-        "gemini-3.5-flash-lite (4. منيع ضد الضغط وسريع جداً)",
-        "gemini-flash-lite-latest (5. أحدث إصدار خفيف)",
-        "gemini-2.5-pro (6. احترافي عميق فائق الذكاء)",
-        "gemini-3.1-pro-preview (7. متطور للملفات الصعبة)",
-        "gemini-flash-latest (8. أحدث إصدار رسمي)",
+        "⚡ التبديل التلقائي الذكي (Auto-Cascade - يبدأ بـ Gemini 3.1 Pro Preview مع حماية 503)",
+        "gemini-3.1-pro-preview (1. احترافي عميق فائق الذكاء والاستيعاب)",
+        "gemini-2.5-pro (2. احترافي سينمائي للتفاصيل المعقدة)",
+        "gemini-3.8-flash (3. الأحدث والأعلى بلاغة ودقة)",
+        "gemini-3.6-flash (4. فائق الاستقرار وسريع)",
+        "gemini-3.5-flash (5. معتمد ومستقر)",
+        "gemini-flash-lite-latest (6. أحدث إصدار خفيف)",
+        "gemini-3.1-flash-lite (7. سريع وخفيف)",
+        "gemini-3.5-flash-lite (8. منيع ضد الضغط وفائق السرعة)",
     ],
     index=0,
-    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.8 Flash، وإذا واجه السيرفر أي ضغط مؤقت (503) يعيد المحاولة خلال ثانيتين ثم ينتقل تلقائياً للبديل المعتمد."
+    help="التبديل التلقائي الذكي يبدأ بنموذج Gemini 3.1 Pro Preview، وإذا واجه السيرفر أي ضغط مؤقت (503) يعيد المحاولة خلال ثانيتين ثم ينتقل تلقائياً للبديل التالي وفق الترتيب المعتمد."
 )
 
 dialect_choice = st.sidebar.selectbox(
