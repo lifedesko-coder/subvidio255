@@ -650,15 +650,16 @@ def translate_bollywood_media(
     response = None
     last_err = None
     successful_model = None
+    raw_cues = []
 
     status_placeholder = st.empty()
 
     for idx, candidate_model in enumerate(models_to_try):
         model_success = False
-        # محاولة أولية + إعادة محاولة ذكية فورية عند حدوث 503 (Spike Backoff)
-        for attempt in range(2):
+        # محاولة أولية + محاولتي إعادة ذكية عند حدوث 503 (Spike Backoff)
+        for attempt in range(3):
             try:
-                attempt_note = "" if attempt == 0 else " 🔄 (إعادة المحاولة بعد زوال الضغط)..."
+                attempt_note = "" if attempt == 0 else f" 🔄 (إعادة المحاولة {attempt}/2 بعد زوال الضغط)..."
                 status_placeholder.info(f"⚡ جاري تحليل وترجمة الصوت سينمائياً عبر النموذج ({idx + 1}/{len(models_to_try)}): **{candidate_model}**{attempt_note}")
                 
                 response = client.models.generate_content(
@@ -671,6 +672,17 @@ def translate_bollywood_media(
                         max_output_tokens=65536,  # سعة فائقة لتغطية كامل مدة الحلقة دون توقف في المنتصف
                     )
                 )
+                
+                # التحقق الصارم من وجود مخرجات صالحة
+                raw_text_cand = (response.text or "").strip()
+                if not raw_text_cand:
+                    raise ValueError(f"النموذج {candidate_model} أعاد رداً نصياً فارغاً.")
+                
+                parsed_cand = safe_parse_cues_json(raw_text_cand)
+                if not parsed_cand or len(parsed_cand) == 0:
+                    raise ValueError(f"النموذج {candidate_model} لم يستخرج أسطر ترجمة صالحة من هذا الملف الصوتي.")
+                
+                raw_cues = parsed_cand
                 successful_model = candidate_model
                 status_placeholder.success(f"🎉 تم الاتصال بنجاح وتوليد الترجمة عبر النموذج: **{candidate_model}**")
                 model_success = True
@@ -678,15 +690,15 @@ def translate_bollywood_media(
             except Exception as e:
                 last_err = e
                 err_str = str(e)
-                # إذا كان الخطأ 503 (ضغط مؤقت) في المحاولة الأولى، ننتظر 2.5 ثانية ليزول الضغط ونعيد المحاولة
-                if attempt == 0 and ("503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str or "overloaded" in err_str):
-                    status_placeholder.warning(f"⏳ النموذج `{candidate_model}` واجه ضغطاً لحظياً (503). جاري الانتظار ثانيتين لإعادة المحاولة...")
-                    time.sleep(2.5)
+                # إذا كان الخطأ 503 (ضغط مؤقت) ولسنا في المحاولة الأخيرة، ننتظر 3 ثوانٍ ونعيد المحاولة
+                if attempt < 2 and ("503" in err_str or "UNAVAILABLE" in err_str or "high demand" in err_str or "overloaded" in err_str):
+                    status_placeholder.warning(f"⏳ النموذج `{candidate_model}` واجه ضغطاً لحظياً (503). جاري الانتظار ثوانٍ معدودة لإعادة المحاولة...")
+                    time.sleep(3.0)
                     continue
                 else:
                     break
 
-        if model_success and response is not None:
+        if model_success and len(raw_cues) > 0:
             break
 
         # إذا بقي نموذج آخر في القائمة، يتم التبديل التلقائي بسلاسة
@@ -696,19 +708,14 @@ def translate_bollywood_media(
                 f"⚠️ تعذر استخدام `{candidate_model}`. "
                 f"جاري التحويل التلقائي فوراً إلى النموذج البديل `{next_model}` وفق الترتيب المعتمد..."
             )
-            time.sleep(1.0)
+            time.sleep(1.2)
             continue
         else:
             status_placeholder.error(f"❌ تعذرت الاستجابة بعد تجربة جميع النماذج ({', '.join(models_to_try)}).")
             raise last_err
 
-    if response is None:
-        raise last_err or RuntimeError("فشل توليد الاستجابة من جميع نماذج Gemini المتاحة.")
-
-    raw_text = response.text or ""
-
-    # استخراج وقراءة الـ JSON مع الإصلاح التلقائي المقاوم للانقطاع وعلامات التنصيص
-    raw_cues = safe_parse_cues_json(raw_text)
+    if not raw_cues:
+        raise last_err or RuntimeError("فشل توليد أسطر الترجمة من جميع نماذج Gemini المتاحة.")
 
     # المعالجة الزمنية الحتمية وضبط الفواصل
     processed = []
@@ -719,8 +726,16 @@ def translate_bollywood_media(
         if end <= start or (end - start) < min_duration:
             end = start + min_duration
 
-        arabic = (item.get("arabicTranslation") or "").strip()
-        hindi = (item.get("originalHindi") or "").strip()
+        # دعم جميع التسميات المحتملة للمفاتيح في الـ JSON
+        arabic = (
+            item.get("arabicTranslation")
+            or item.get("arabic")
+            or item.get("translation")
+            or item.get("text")
+            or item.get("dialogue")
+            or ""
+        ).strip()
+        hindi = (item.get("originalHindi") or item.get("hindi") or "").strip()
         cue_type = item.get("type", "dialogue")
 
         # تصفية المؤثرات الصوتية والبيئية إذا كان الخيار مفعلاً
